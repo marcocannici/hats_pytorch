@@ -21,8 +21,8 @@ for this to work):
 
 `python demo/run.py --data_dir /path/to/ncars/train --batch_size 1`
 
-Time to extract representations from all the N-Cars training set on a 
-GeForce GTX 1080ti is 01:27 (3.925 ms/sample) with batch_size 1 and 00:47 
+Time to extract representations from all the N-Cars training samples on a 
+GeForce GTX 1080ti is 01:27 (3.925 ms/sample) with batch_size 1, and 00:47 
 (0.758 ms/sample) with batch_size 64
 
 
@@ -39,6 +39,6 @@ histograms = hats(events, lengths)
 ### Disclaimer
 
 This is unofficial code and, as such, the implementation may differ from the one
-reported in the paper. If you find any error of difference with the paper, do not
+reported in the paper. If you find any error or difference with the paper, do not
 hesitate to report it! :smiley:
 
