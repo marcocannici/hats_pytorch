@@ -9,14 +9,14 @@
 
 template <typename scalar_t>
 __global__ void local_surface_kernel(const scalar_t* __restrict__ input,
-                                     const uint8_t* __restrict__ valid_mask,
+                                     const int64_t* __restrict__ lengths,
                                      float* __restrict__ output,
 			                         const int64_t event_size,
                                      const int64_t batch_size,
 			                         const int64_t feature_size,
-                                     const int64_t delta_t,
+                                     const double delta_t,
                                      const int64_t r,
-                                     const float tau){
+                                     const double tau){
 
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const int b = blockIdx.y * blockDim.y + threadIdx.y;
@@ -29,7 +29,7 @@ __global__ void local_surface_kernel(const scalar_t* __restrict__ input,
         auto i_t = input[i_idx + 2];
         int i_p = input[i_idx + 3];
 
-        if (valid_mask[i * batch_size + b]){
+        if (i < lengths[b]){
             // Look into the past memory
             for(int64_t e = i - 1; e >= 0; e--){
                 int64_t e_idx = e * batch_size * feature_size + b * feature_size;
@@ -64,10 +64,10 @@ __global__ void local_surface_kernel(const scalar_t* __restrict__ input,
 
 
 torch::Tensor local_surface_wrapper(torch::Tensor input,
-                                    torch::Tensor valid_mask,
-                                    int delta_t,
+                                    torch::Tensor lengths,
+                                    double delta_t,
                                     int r,
-                                    float tau){
+                                    double tau){
 
     const auto event_size = input.size(0);
     const auto batch_size = input.size(1);
@@ -86,7 +86,7 @@ torch::Tensor local_surface_wrapper(torch::Tensor input,
     AT_DISPATCH_ALL_TYPES(input.type(), "local_surface_wrapper", ([&] {
 		local_surface_kernel<scalar_t><<<numBlocks, threadsPerBlock>>>(
 			input.data_ptr<scalar_t>(),
-			valid_mask.data_ptr<uint8_t>(),
+			lengths.data_ptr<int64_t>(),
 			output.data_ptr<float>(),
 			event_size,
 			batch_size,

@@ -16,8 +16,8 @@ class HATS(nn.Module):
         :param tuple input_shape: the (height, width) size of the frame
         :param int r: the size of the 2r+1 x 2r+1 spatial neighborhood
         :param int k: the size of the cells
-        :param int tau: the decay factor
-        :param int delta_t: the delay defining the temporal neighborhood
+        :param float tau: the decay factor
+        :param float delta_t: the delay defining the temporal neighborhood
         :param bool fold: if True, histograms are organized in a grid of
             shape [B, 2, (2R+1) * NhCells, (2R+1) * NwCells] where each
             histogram is placed its original position in the frame. Otherwise,
@@ -30,8 +30,11 @@ class HATS(nn.Module):
         self.tau = tau
         self.r = r
         self.k = k
-        self.input_shape = input_shape
-        height, width = input_shape
+
+        # Make sure the input shape is divisible by k
+        padded_shape = tuple((s + (k - 1)) // k * k for s in input_shape)
+        self.input_shape = padded_shape
+        height, width = padded_shape
 
         self.grid_n_width = (width // k)
         self.grid_n_height = (height // k)
@@ -43,14 +46,6 @@ class HATS(nn.Module):
                              self.grid_n_width * self.cell_size)
 
         self.register_buffer('coord2cellid', self.get_coord2cellid_matrix())
-
-    @staticmethod
-    def padding_mask(lengths, batch_size, time_size=None):
-
-        max_len = torch.max(lengths) if time_size is None else time_size
-        mask = torch.arange(max_len, device=lengths.device, dtype=lengths.dtype)
-        mask = mask[:, None].expand(max_len, batch_size) < lengths[None, :]
-        return mask
 
     def get_coord2cellid_matrix(self):
 
@@ -73,13 +68,8 @@ class HATS(nn.Module):
                              self.grid_n_height, self.grid_n_width)
 
     def local_surface(self, gr_events, gr_len):
-        TCellPad, BNCells, C = gr_events.shape
-        # A [TCellPad, BNCells] mask specifying it that value is padded or not
-        gr_mask = self.padding_mask(gr_len, BNCells, TCellPad)
-
         # [TCellPad, 2, 2R+1, 2R+1, BNCells]
-        gr_local_surfaces = local_surface(gr_events,
-                                          gr_mask.type(torch.uint8),
+        gr_local_surfaces = local_surface(gr_events, gr_len,
                                           self.delta_t, self.r, self.tau)
         # [TCellPad, 2, 2R+1, 2R+1, BNCells] -> [2, 2R+1, 2R+1, BNCells]
         #  -> [BNCells, 2, 2R+1, 2R+1]
@@ -114,15 +104,12 @@ class HATS(nn.Module):
         gr_local_surfaces = self.local_surface(gr_events, gr_len)
 
         # Compute how many events there are in each cell
-        n_pos = gr_events[..., -1].sum(0)  # [B*NCells]
-        n_neg = gr_len - n_pos  # [B*NCells]
-        norm_denom = torch.stack([n_neg, n_pos], dim=-1).float()
-        norm_denom[norm_denom == 0] = 1  # Avoids div by zero
+        norm_denom = gr_len[:, None].float() + 1e-6  # [B*NCells, 1]
 
         # Normalize by the event count
         cell_histograms = gr_local_surfaces / norm_denom[:, :, None, None]
 
-        # Fold the histograms back together
+        # Unfold the histograms back together
         histogram_unfold = cell_histograms.new_zeros(
             [B, self.grid_n_height, self.grid_n_width, 2,
              self.cell_size, self.cell_size])

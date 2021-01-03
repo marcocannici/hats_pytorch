@@ -19,18 +19,18 @@ You can test the implementation on the
 the following command (you must have cloned the repository with `--recursive` 
 for this to work):
 
-`python demo/run.py --data_dir /path/to/ncars/train --batch_size 1`
+`python demo/train.py --data_dir /path/to/ncars --batch_size 64`
 
-Time to extract representations from all the N-Cars training samples on a 
-GeForce GTX 1080ti is 01:27 (3.925 ms/sample) with batch_size 1, and 00:47 
-(0.758 ms/sample) with batch_size 64
+Time to extract representations from all the N-Cars training set on a 
+GeForce GTX 1080ti is 1.24 ms/sample with batch_size 1, and 0.11 ms/sample 
+with batch_size 64
 
 
 ### Usage
 
 ```python
 from hats_pytorch import HATS
-hats = HATS((100, 120), r=3, k=10, tau=1e9, delta_t=100000, fold=True)
+hats = HATS((100, 120), r=3, k=10, tau=1e9, delta_t=200e3, fold=True)
 hats.to('cuda:0')
 histograms = hats(events, lengths)
 ```
