@@ -31,25 +31,26 @@ __global__ void local_surface_kernel(const scalar_t* __restrict__ input,
 
         if (i < lengths[b]){
             // Look into the past memory
-            for(int64_t e = i - 1; e >= 0; e--){
-                int64_t e_idx = e * batch_size * feature_size + b * feature_size;
-                int e_x = input[e_idx + 0];
-                int e_y = input[e_idx + 1];
-                auto e_t = input[e_idx + 2];
-                int e_p = input[e_idx + 3];
+            for(int64_t j = i - 1; j >= 0; j--){
+                int64_t j_idx = j * batch_size * feature_size + b * feature_size;
+                int j_x = input[j_idx + 0];
+                int j_y = input[j_idx + 1];
+                auto j_t = input[j_idx + 2];
+                int j_p = input[j_idx + 3];
 
                 // We stop as soon as we exit the event's memory
-                if (e_t < i_t - delta_t)
+                if (j_t < i_t - delta_t)
                     break;
 
-                int rf_y = e_y - i_y + r;
-                int rf_x = e_x - i_x + r;
+                int rf_y = j_y - i_y + r;
+                int rf_x = j_x - i_x + r;
 
-                // The eth event is inside the eih event's neighborhood
-                if ((e_t < i_t) & (e_p == i_p) &
-                    (rf_x < rf_size) & (rf_y < rf_size)){
+                // The jth event is inside the ith event's neighborhood
+                if ((j_t < i_t) & (j_p == i_p) &
+                    (rf_x >= 0) & (rf_x < rf_size) &
+                    (rf_y >= 0) & (rf_y < rf_size)){
 
-                    float value = expf((float)(e_t - i_t) / tau);
+                    float value = expf((float)(j_t - i_t) / tau);
                     int64_t out_idx = i * 2 * rf_size * rf_size * batch_size + \
                                       i_p * rf_size * rf_size * batch_size + \
                                       rf_y * rf_size * batch_size + \
