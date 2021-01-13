@@ -28,6 +28,8 @@ __global__ void local_surface_kernel(const scalar_t* __restrict__ input,
         int i_y = input[i_idx + 1];
         auto i_t = input[i_idx + 2];
         int i_p = input[i_idx + 3];
+        // Convert -1 polarity to 0
+        i_p = i_p < 0 ? 0 : i_p;
 
         if (i < lengths[b]){
             // Look into the past memory
@@ -37,6 +39,8 @@ __global__ void local_surface_kernel(const scalar_t* __restrict__ input,
                 int j_y = input[j_idx + 1];
                 auto j_t = input[j_idx + 2];
                 int j_p = input[j_idx + 3];
+                // Convert -1 polarity to 0
+                j_p = j_p < 0 ? 0 : j_p;
 
                 // We stop as soon as we exit the event's memory
                 if (j_t < i_t - delta_t)
@@ -51,11 +55,11 @@ __global__ void local_surface_kernel(const scalar_t* __restrict__ input,
                     (rf_y >= 0) & (rf_y < rf_size)){
 
                     float value = expf((float)(j_t - i_t) / tau);
-                    int64_t out_idx = i * 2 * rf_size * rf_size * batch_size + \
-                                      i_p * rf_size * rf_size * batch_size + \
-                                      rf_y * rf_size * batch_size + \
-                                      rf_x * batch_size + \
-                                      b;
+                    int64_t out_idx = i * batch_size * 2 * rf_size * rf_size + \
+                                      b * 2 * rf_size * rf_size + \
+                                      i_p * rf_size * rf_size + \
+                                      rf_y * rf_size + \
+                                      rf_x;
                     output[out_idx] = output[out_idx] + value;
                 }
             }
@@ -75,7 +79,7 @@ torch::Tensor local_surface_wrapper(torch::Tensor input,
     const auto feature_size = input.size(2);
 
     // Create a tensor to hold the result
-	auto output = torch::zeros({event_size, 2, 2*r + 1, 2*r + 1, batch_size},
+	auto output = torch::zeros({event_size, batch_size, 2, 2*r + 1, 2*r + 1},
 	                            input.options().dtype(at::kFloat));
 
     // Split the first dimension over threadsPerBlock.x threads

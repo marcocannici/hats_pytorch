@@ -48,6 +48,15 @@ class HATS(nn.Module):
         self.register_buffer('coord2cellid', self.get_coord2cellid_matrix())
 
     def get_coord2cellid_matrix(self):
+        """
+        Compute a matrix [H, W] containing in each pixel location the id
+        of the cell containing that pixel.
+        E.g., given an 4x4 input space and k=2, this function returns:
+            [[0 0 1 1],
+             [0 0 1 1],
+             [2 2 3 3],
+             [2 2 3 3]]
+        """
 
         flat_matrix = torch.arange(self.n_cells) \
             .repeat(self.k ** 2) \
@@ -56,25 +65,111 @@ class HATS(nn.Module):
                                   kernel_size=(self.k, self.k), stride=self.k)
         return pixels2rf_matrix.type(torch.int64).view(self.input_shape)
 
-    def group_by_cell(self, events, lengths):
+    def cells_memory(self, events, lengths):
+        """
+        Compute the memory of each cell, that is, the set of events contained in
+        in each cell. This function maintains th original event order when
+        splitting events into cells. Note: cells of different samples are
+        grouped in the same dimension and cells with no events are discarded.
+        In the case all cells in all samples contain at least one event,
+        B*NCells memory cells are extracted.
+
+        :param torch.Tensor events: a [B, TPad, C] tensor of events
+        :param torch.Tensor lengths: a [B] tensor of original sequence lengths
+        :return: A tuple (cell_b, cell_len, cell_h, cell_w, cell_memory):
+            - cell_b: a [B*NCells] tensor containing, for each extracted memory,
+                the original sample id from which it has been extracted
+            - cell_len: a [B*NCells] tensor containing the number of events
+                in each memory cell
+            - cell_h: a [B*NCells] tensor containing for each cell, its y
+                position in the grid of cells
+            - cell_w: a [B*NCells] tensor containing for each cell, its x
+                position in the grid of cells
+            - cell_memory: [TCellPad, B*NCells, C] tensor, when TCellPad is
+                the temporal dimension, eventually padded with zero values at
+                the end, B*NCells is the total number of active cells in the
+                batch (i.e., receiving at least one event) and C is the event's
+                channel dimension. Note, only the cells containing at least one
+                event are extracted.
+        """
+
+        # Make sure lengths are int64
+        lengths = lengths.long()
 
         # Retrieve the cell id in which events are contained
         ids = self.coord2cellid[events[..., 1].type(torch.int64),
                                 events[..., 0].type(torch.int64)]
 
         # Group events by cell id, maintaining the original event order
-        # groups.shape = [n_ev, n_rf, n_feat]
+        # groups.shape = [TCellPad, B*NCells, C]
         return group_by_cell(events, ids, lengths,
                              self.grid_n_height, self.grid_n_width)
 
-    def local_surface(self, gr_events, gr_len):
-        # [TCellPad, 2, 2R+1, 2R+1, BNCells]
-        gr_local_surfaces = local_surface(gr_events, gr_len,
-                                          self.delta_t, self.r, self.tau)
-        # [TCellPad, 2, 2R+1, 2R+1, BNCells] -> [2, 2R+1, 2R+1, BNCells]
-        #  -> [BNCells, 2, 2R+1, 2R+1]
-        gr_local_surfaces = gr_local_surfaces.sum(0).permute(3, 0, 1, 2)
-        return gr_local_surfaces
+    def cells_histograms(self, cell_memory, cell_len):
+        """
+        Compute the normalized histograms for each cell
+        :param torch.Tensor cell_memory: a [TCellPad, B*NCells, C] tensor
+            containing for each  B*NCells cell, a list of TCellPad events with
+            C channels, optionally padded at the end with zero values
+        :param torch.Tensor cell_len: a [B*NCells] tensor containing the actual
+            length of each memory cell before padding
+        :return: a [BNCells, 2, 2R+1, 2R+1] tensor representing the two surfaces
+            one for each polarity of all the cells
+        """
+
+        # Compute the surface for each event
+        # [TCellPad, BNCells, 2, 2R+1, 2R+1]
+        cell_local_surfaces = local_surface(cell_memory, cell_len,
+                                            self.delta_t, self.r, self.tau)
+        # Sum the event's surfaces together
+        # [TCellPad, BNCells, 2, 2R+1, 2R+1] -> [BNCells, 2, 2R+1, 2R+1]
+        cell_local_surfaces = cell_local_surfaces.sum(0)
+
+        # Avoid div by zero, reshape [BNCells, 1, 1, 1]
+        cell_len = torch.clamp_min(cell_len, 1).reshape(-1, 1, 1, 1)
+        # Normalize by the event count
+        cell_histograms = cell_local_surfaces / cell_len
+
+        return cell_histograms
+
+    def group_histograms(self, cell_hists, cell_b, cell_h, cell_w, batch_size):
+        """
+        The histogram extraction process is performed independently on each
+        memory cell, regardless of the sample id or position of the original
+        cell. This function groups histograms back together based on the sample
+        they come from, and the position of the cell in the frame.
+        :param torch.Tensor cell_hists: the [BNCells, 2, 2R+1, 2R+1] histograms
+            to be grouped
+        :param torch.Tensor cell_b: a [B*NCells] tensor containing, for each
+            histogram, the original sample id from which it has been extracted
+        :param torch.Tensor cell_h: a [B*NCells] tensor containing for each
+            histogram, its y position in the grid of cells
+        :param torch.Tensor cell_w: a [B*NCells] tensor containing for each
+            histogram, its x position in the grid of cells
+        :param int batch_size: the original batch size
+        :return: if self.fold = True, histograms are organized in a grid of
+            shape [B, 2, (2R+1) * NhCells, (2R+1) * NwCells] where each
+            histogram is placed its original position in the frame. Otherwise,
+            a [B, NCells, 2, 2R+1, 2R+1] tensor is returned
+        """
+
+        # Unfold the histograms back together
+        hist_unfold = cell_hists.new_zeros(
+            [batch_size, self.grid_n_height, self.grid_n_width, 2,
+             self.cell_size, self.cell_size])
+        hist_unfold[cell_b, cell_h, cell_w] = cell_hists
+
+        if not self.fold:
+            hist = hist_unfold.reshape(batch_size, -1, 2, self.cell_size,
+                                       self.cell_size)
+        else:
+            hist_unfold = hist_unfold.permute(0, 3, 4, 5, 1, 2) \
+                .reshape(batch_size, 2 * self.cell_size ** 2, self.n_cells)
+
+            hist = F.fold(hist_unfold, self.output_shape[-2:],
+                          kernel_size=self.cell_size,
+                          stride=self.cell_size)
+        return hist
 
     def forward(self, events, lengths):
         """
@@ -85,44 +180,22 @@ class HATS(nn.Module):
             features
         :param torch.Tensor lengths: a tensor of shape [B] specifying for each
             sample in "events", its original length before padding
-        :return: if self.fold=True, histograms are organized in a grid of
+        :return: if self.fold = True, histograms are organized in a grid of
             shape [B, 2, (2R+1) * NhCells, (2R+1) * NwCells] where each
             histogram is placed its original position in the frame. Otherwise,
             a [B, NCells, 2, 2R+1, 2R+1] tensor is returned
         """
         B, TPad, C = events.shape
-        # Ensure that polarities are encoded as [0, 1] values
-        assert events[..., -1].min().item() >= 0 and \
-               events[..., -1].max().item() <= 1
-        lengths = lengths.long()
 
-        # gr_events.shape = [TCellPad, B*NCells, C]
-        gr_b, gr_len, gr_h, gr_w, gr_events = self.group_by_cell(
-            events, lengths)
+        # cell_memory.shape = [TCellPad, B*NCells, C]
+        cell_b, cell_len, cell_h, cell_w, cell_memory = \
+            self.cells_memory(events, lengths)
 
         # Compute the local surfaces [BNCells, 2, 2R+1, 2R+1]
-        gr_local_surfaces = self.local_surface(gr_events, gr_len)
+        cell_hists = self.cells_histograms(cell_memory, cell_len)
 
-        # Compute how many events there are in each cell
-        norm_denom = gr_len[:, None].float() + 1e-6  # [B*NCells, 1]
+        # Group back the surfaces based on sample id and cell id.
+        # Optionally reorder them in a grid if self.fold = True
+        hists = self.group_histograms(cell_hists, cell_b, cell_h, cell_w, B)
 
-        # Normalize by the event count
-        cell_histograms = gr_local_surfaces / norm_denom[:, :, None, None]
-
-        # Unfold the histograms back together
-        histogram_unfold = cell_histograms.new_zeros(
-            [B, self.grid_n_height, self.grid_n_width, 2,
-             self.cell_size, self.cell_size])
-        histogram_unfold[gr_b, gr_h, gr_w] = cell_histograms
-
-        if not self.fold:
-            return histogram_unfold.reshape(B, -1, 2, self.cell_size,
-                                            self.cell_size)
-        else:
-            histogram_unfold = histogram_unfold.permute(0, 3, 4, 5, 1, 2) \
-                .reshape(B, 2 * self.cell_size**2, self.n_cells)
-
-            histogram = F.fold(histogram_unfold, self.output_shape[-2:],
-                               kernel_size=self.cell_size,
-                               stride=self.cell_size)
-            return histogram
+        return hists
