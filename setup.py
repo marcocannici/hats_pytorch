@@ -1,9 +1,12 @@
+import os
 import setuptools
 
-with open("README.md", "r", encoding="utf-8") as fh:
+root = os.path.dirname(os.path.abspath(__file__))
+
+with open(os.path.join(root, "README.md"), "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
-exec(open("hats_pytorch/_version.py").read())
+exec(open(os.path.join(root, "hats_pytorch/_version.py")).read())
 
 setuptools.setup(
     name="hats_pytorch",
@@ -20,4 +23,6 @@ setuptools.setup(
         "License :: OSI Approved :: Apache 2.0 License",
     ],
     python_requires='>=3.6',
+    install_requires=["hats_cuda"],
+    dependency_links=['file:' + os.path.join(root, "cuda#egg=hats_cuda-0.0.1")]
 )

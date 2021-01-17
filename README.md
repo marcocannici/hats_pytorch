@@ -9,10 +9,8 @@ Tested on Pytorch 1.6.0, CUDA 10.1
 
 - Clone this repository (add `--recursive` if you want to run the demo script)<br>
 `git clone https://github.com/marcocannici/hats_pytorch.git`
-- Build and install the CUDA kernels:
-`cd cuda; python setup.py install`
-- Install the `hats_pytorch` package:
-`python setup.py install`
+- Install `hats_pytorch` (this also builds the CUDA kernels):
+`cd hats_pytorch; python setup.py install`
 
 You can test the implementation on the 
 [N-Cars](https://www.prophesee.ai/2018/03/13/dataset-n-cars/) dataset by running 
