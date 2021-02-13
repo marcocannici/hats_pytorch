@@ -10,21 +10,21 @@
 
 
 template <typename scalar_t>
-__global__ void group_cell_kernel(const scalar_t* __restrict__ input,
-                                  const int64_t* __restrict__ cell_ids,
-			                      const int64_t* __restrict__ lengths,
-			                      const int64_t* __restrict__ cell_offsets,
-			                      scalar_t* __restrict__ groups,
-			                      int64_t* __restrict__ gr_len,
-                                  int64_t* __restrict__ gr_batch_id,
-                                  int64_t* __restrict__ gr_h,
-                                  int64_t* __restrict__ gr_w,
-                                  const int64_t out_w,
-			                      const int64_t batch_size,
-			                      const int64_t event_size,
-			                      const int64_t feature_size,
-			                      const int64_t num_rf,
-			                      const int64_t new_batch_size){
+__global__ void group_by_cell_kernel(const scalar_t* __restrict__ input,
+                                     const int64_t* __restrict__ cell_ids,
+			                         const int64_t* __restrict__ lengths,
+			                         const int64_t* __restrict__ cell_offsets,
+			                         scalar_t* __restrict__ groups,
+			                         int64_t* __restrict__ gr_len,
+                                     int64_t* __restrict__ gr_batch_id,
+                                     int64_t* __restrict__ gr_h,
+                                     int64_t* __restrict__ gr_w,
+                                     const int64_t out_w,
+			                         const int64_t batch_size,
+			                         const int64_t event_size,
+			                         const int64_t feature_size,
+			                         const int64_t num_rf,
+			                         const int64_t new_batch_size){
 
     const int64_t batch_id = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -100,7 +100,7 @@ group_by_cell_wrapper(torch::Tensor input,
 	int numBlocks = (batch_size + threadsPerBlock - 1) / threadsPerBlock;
 
 	AT_DISPATCH_ALL_TYPES(input.type(), "group_by_cell_wrapper", ([&] {
-		group_cell_kernel<scalar_t><<<numBlocks, threadsPerBlock>>>(
+		group_by_cell_kernel<scalar_t><<<numBlocks, threadsPerBlock>>>(
 			input.data_ptr<scalar_t>(),
 			cell_ids.data_ptr<int64_t>(),
 			lengths.data_ptr<int64_t>(),

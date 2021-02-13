@@ -28,7 +28,7 @@ with batch_size 64
 
 ```python
 from hats_pytorch import HATS
-hats = HATS((100, 120), r=3, k=10, tau=1e9, delta_t=200e3, fold=True)
+hats = HATS((100, 120), r=3, k=10, tau=1e9, delta_t=200e3, bins=1, fold=True)
 hats.to('cuda:0')
 histograms = hats(events, lengths)
 ```

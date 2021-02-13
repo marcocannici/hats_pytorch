@@ -52,7 +52,7 @@ def main():
     args = parse_args()
 
     transform = CenterTransform((100, 120))
-    hats = HATS((100, 120), r=3, k=10, tau=1e9, delta_t=100e3, fold=False)
+    hats = HATS((100, 120), r=3, k=10, tau=1e9, delta_t=100e3, bins=1, fold=False)
     hats.to('cuda:0')
     hats.eval()
 

@@ -1,13 +1,13 @@
 import torch
 from torch import nn
 from torch.nn import functional as F
-from hats_cuda import group_by_cell, local_surface
+from hats_cuda import group_by_cell, group_by_bin, local_surface
 
 
 class HATS(nn.Module):
 
-    def __init__(self, input_shape=(180, 240), r=3,
-                 k=10, tau=1e6, delta_t=100000, fold=False):
+    def __init__(self, input_shape=(180, 240), r=3, k=10,
+                 tau=1e6, delta_t=100000, bins=1, fold=False):
         """
         Implements the HATS event representation as described in "HATS:
         Histograms of Averaged Time Surfaces for Robust Event-based Object
@@ -18,15 +18,20 @@ class HATS(nn.Module):
         :param int k: the size of the cells
         :param float tau: the decay factor
         :param float delta_t: the delay defining the temporal neighborhood
+        :param float bins: the number of bins to compute. The input
+            sequence is split into 'bins' intervals, a representation is
+            extracted from each of them, and representations are finally
+            stacked on the channel dimension
         :param bool fold: if True, histograms are organized in a grid of
-            shape [B, 2, (2R+1) * NhCells, (2R+1) * NwCells] where each
+            shape [B, 2*bins, (2R+1) * NhCells, (2R+1) * NwCells] where each
             histogram is placed its original position in the frame. Otherwise,
-            a [B, NCells, 2, 2R+1, 2R+1] tensor is returned
+            a [B, NCells, 2*bins, 2R+1, 2R+1] tensor is returned
         """
         super().__init__()
 
         self.fold = fold
         self.delta_t = delta_t
+        self.bins = bins
         self.tau = tau
         self.r = r
         self.k = k
@@ -40,7 +45,6 @@ class HATS(nn.Module):
         self.grid_n_height = (height // k)
         self.n_cells = self.grid_n_width * self.grid_n_height
         self.cell_size = 2*self.r + 1
-        self.n_polarities = 2
 
         self.output_shape = (2, self.grid_n_height * self.cell_size,
                              self.grid_n_width * self.cell_size)
@@ -64,6 +68,86 @@ class HATS(nn.Module):
         pixels2rf_matrix = F.fold(flat_matrix, self.input_shape,
                                   kernel_size=(self.k, self.k), stride=self.k)
         return pixels2rf_matrix.type(torch.int64).view(self.input_shape)
+
+    def split_bins(self, events, lengths):
+        """
+        Given a sequence of events, it splits each sequence into self.bins
+        temporal intervals.
+
+        :param torch.Tensor events: a [B, TPad, C] tensor of events
+        :param torch.Tensor lengths: a [B] tensor of original sequence lengths
+        :return: a tuple (split_events, split_lengths):
+            - split_events: a [B*bins, TPad, C] tensor of events
+            - split_lengths: a [B*bins] tensor of original sequence lengths
+        """
+
+        if self.bins <= 1:
+            return events, lengths
+
+        B, TPad, C = events.shape
+        device = events.device
+
+        t = events[:, :, 2].float()
+        # Compute the time of the first and last events in each sample
+        last_idx = (lengths - 1).long()
+        batch_idx = torch.arange(B, device=device)
+
+        first_ts = t[:, [0]]  # [B, 1]
+        last_ts = t[batch_idx, last_idx].unsqueeze(-1)  # [B, 1]
+
+        # Convert time into a bin id
+        t_norm = (t - first_ts) / (last_ts - first_ts + 1e-6)
+        t_bin = torch.clamp((t_norm * self.bins).int(), 0, self.bins - 1)
+
+        # Compute the index for the sum
+        batch_idx = torch.arange(B, device=device, dtype=torch.int64)
+        batch_idx = batch_idx.unsqueeze(-1).repeat(1, TPad)
+        idx = (batch_idx * self.bins + t_bin).reshape(-1)
+
+        # We sum 0 if it is a padded event, 1 otherwise
+        values = torch.arange(lengths.max(), device=device, dtype=torch.int32)
+        values = (values.repeat(B, 1) < lengths.unsqueeze(1)).reshape(-1)
+
+        # Count the number of events in each bin
+        bins_count = torch.zeros([B, self.bins],
+                                 dtype=torch.int64, device=device)
+        bins_count.put_(idx.long(), values.long(), accumulate=True)
+
+        # We now group events into bins
+        split_events = group_by_bin(events, bins_count)
+        split_lengths = bins_count.reshape(-1)
+
+        return split_events, split_lengths
+
+    def group_bins(self, hists):
+        """
+        Group histograms extracted from different intervals together by
+        placing them on the channel dimension
+
+        :param hists: if self.fold = True, histograms are organized in a grid of
+            shape [B*bins, 2, (2R+1) * NhCells, (2R+1) * NwCells] where each
+            histogram is placed its original position in the frame. Otherwise,
+            a [B*bins, NCells, 2, 2R+1, 2R+1] tensor is returned
+        :return: if self.fold = True, histograms are organized in a grid of
+            shape [B, bins*2, (2R+1) * NhCells, (2R+1) * NwCells] where each
+            histogram is placed its original position in the frame. Otherwise,
+            a [B, NCells, bins*2, 2R+1, 2R+1] tensor is returned
+        """
+
+        if self.bins <= 1:
+            return hists
+
+        if not self.fold:
+            # hists.shape = [B*bins, NCells, 2, 2R+1, 2R+1]
+            Bbins, NCells, _, S, _ = hists.shape
+            hists = hists.reshape(-1, self.bins, NCells, 2, S, S)
+            hists = hists.permute(0, 2, 1, 3, 4, 5)
+            hists = hists.reshape(-1, NCells, self.bins * 2, S, S)
+        else:
+            # hists.shape = [B*bins, 2, (2R+1) * NhCells, (2R+1) * NwCells]
+            Bbins, _, Sh, Sw = hists.shape
+            hists = hists.reshape(-1, self.bins * 2, Sh, Sw)
+        return hists
 
     def cells_memory(self, events, lengths):
         """
@@ -185,6 +269,10 @@ class HATS(nn.Module):
             histogram is placed its original position in the frame. Otherwise,
             a [B, NCells, 2, 2R+1, 2R+1] tensor is returned
         """
+
+        # Split events into bins, placing bins in the batch dimension,
+        # they will then be stacked back together at the end
+        events, lengths = self.split_bins(events, lengths)
         B, TPad, C = events.shape
 
         # cell_memory.shape = [TCellPad, B*NCells, C]
@@ -197,5 +285,7 @@ class HATS(nn.Module):
         # Group back the surfaces based on sample id and cell id.
         # Optionally reorder them in a grid if self.fold = True
         hists = self.group_histograms(cell_hists, cell_b, cell_h, cell_w, B)
+        # Group back the bins based on the sample they were in
+        hists = self.group_bins(hists)
 
         return hists
